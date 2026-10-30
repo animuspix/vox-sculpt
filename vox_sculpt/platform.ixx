@@ -150,47 +150,44 @@ struct osThreadControls
     std::atomic<long>* _state;
     platform::threads::thread_meta::THREAD_TYPES _type;
     std::atomic<long>* _thread_openness;
+    bool _work_pending;
 };
 
-#define DEBUG_THRD_INDICES
-#ifdef DEBUG_THRD_INDICES
-static u32 indices[9] = {};
-#endif
-volatile u32* batched_thrd_indices;
 osThreadControls<platform::threads::thread_meta::tile_thrd_fn>* batched_thrd_controls = nullptr;
 
 #define DBG_THREAD_MAIN
 #ifdef DBG_THREAD_MAIN
 #pragma optimize ("", off)
 #endif
-DWORD thread_main_tiles()
+DWORD WINAPI thread_main_tiles(void* ctrl)
 {
-    u32 thrd_ndx = *batched_thrd_indices;
-    InterlockedIncrement(batched_thrd_indices);
-#ifdef DEBUG_THRD_INDICES
-    indices[thrd_ndx] = thrd_ndx;
-#endif
-
-    osThreadControls<platform::threads::thread_meta::tile_thrd_fn> tile_controls = batched_thrd_controls[thrd_ndx];
-    PCRITICAL_SECTION crit = tile_controls._crit_section;
-    PCONDITION_VARIABLE cvar = tile_controls._cvar;
-    platform::threads::thread_meta::tile_thrd_fn* task = tile_controls._next_task;
-    void* task_params = tile_controls._work_params;
-    std::atomic<long>* state = tile_controls._state;
-    std::atomic<long>* thread_openness = tile_controls._thread_openness;
-
-    while (thread_openness->load())
+    auto* tile_controls = static_cast<osThreadControls<platform::threads::thread_meta::tile_thrd_fn>*>(ctrl);
+    for (;;)
     {
-        EnterCriticalSection(crit);
-        if (SleepConditionVariableCS(cvar, crit, INFINITE))
+        EnterCriticalSection(tile_controls->_crit_section);
+        while (tile_controls->_thread_openness->load() && !tile_controls->_work_pending)
         {
-            platform::threads::thread_meta::tile_params* paramset =
-                static_cast<platform::threads::thread_meta::tile_params*>(task_params);
-            state->store(platform::threads::WORKING);
-            (*task)(paramset->workgroup_width, paramset->workgroup_height, paramset->workgroup_index);
-            state->store(platform::threads::SLEEPING);
+            if (!SleepConditionVariableCS(tile_controls->_cvar, tile_controls->_crit_section, INFINITE))
+            {
+                LeaveCriticalSection(tile_controls->_crit_section);
+                return GetLastError();
+            }
         }
-        LeaveCriticalSection(crit);
+
+        if (!tile_controls->_thread_openness->load())
+        {
+            LeaveCriticalSection(tile_controls->_crit_section);
+            break;
+        }
+
+        tile_controls->_work_pending = false;
+        const auto task = *tile_controls->_next_task;
+        const auto params = *static_cast<platform::threads::thread_meta::tile_params*>(tile_controls->_work_params);
+        LeaveCriticalSection(tile_controls->_crit_section);
+
+        tile_controls->_state->store(platform::threads::WORKING);
+        task(params.workgroup_width, params.workgroup_height, params.workgroup_index);
+        tile_controls->_state->store(platform::threads::SLEEPING);
     }
     return 0;
 }
@@ -198,29 +195,21 @@ DWORD thread_main_tiles()
 #pragma optimize ("", on)
 #endif
 
-PCONDITION_VARIABLE batch_cvar = nullptr;
 void platform::threads::osInitBatchProcessors(platform::threads::osThread<platform::threads::thread_meta::TILE>* workgroup,
                                               u16 workgroup_area)
 {
-    if (batch_cvar == nullptr)
-    {
-        batch_cvar = mem::allocate_tracing<CONDITION_VARIABLE>(sizeof(CONDITION_VARIABLE));
-        InitializeConditionVariable(batch_cvar);
-    }
-
     if (batched_thrd_controls == nullptr)
     {
         batched_thrd_controls = mem::allocate_tracing<osThreadControls<platform::threads::thread_meta::tile_thrd_fn>>(
             sizeof(osThreadControls<platform::threads::thread_meta::tile_thrd_fn>) * workgroup_area);
-        batched_thrd_indices = mem::allocate_tracing<u32>(sizeof(u32));
-        *batched_thrd_indices = 0;
     }
 
     for (u16 i = 0; i < workgroup_area; i++)
     {
         if (!workgroup[i].osCheckInitialized())
         {
-            workgroup[i].cvar = batch_cvar;
+            workgroup[i].cvar = mem::allocate_tracing<CONDITION_VARIABLE>(sizeof(CONDITION_VARIABLE));
+            InitializeConditionVariable(static_cast<PCONDITION_VARIABLE>(workgroup[i].cvar));
             workgroup[i].thread_guard = mem::allocate_tracing<CRITICAL_SECTION>(sizeof(CRITICAL_SECTION));
             InitializeCriticalSection(static_cast<LPCRITICAL_SECTION>(workgroup[i].thread_guard));
 
@@ -234,13 +223,14 @@ void platform::threads::osInitBatchProcessors(platform::threads::osThread<platfo
             workgroup[i].thread_openness->store(1);
 
             osThreadControls<platform::threads::thread_meta::tile_thrd_fn>& tile_controls = batched_thrd_controls[i];
-            tile_controls._cvar = batch_cvar;
+            tile_controls._cvar = static_cast<PCONDITION_VARIABLE>(workgroup[i].cvar);
             tile_controls._crit_section = static_cast<PCRITICAL_SECTION>(workgroup[i].thread_guard);
             tile_controls._next_task = &workgroup[i].next_task;
             tile_controls._work_params = &workgroup[i].next_task_params;
             tile_controls._state = workgroup[i].state;
             tile_controls._type = platform::threads::thread_meta::TILE;
             tile_controls._thread_openness = workgroup[i].thread_openness;
+            tile_controls._work_pending = false;
         }
         else
         {
@@ -250,8 +240,7 @@ void platform::threads::osInitBatchProcessors(platform::threads::osThread<platfo
 
     for (u16 i = 0; i < workgroup_area; i++)
     {
-        workgroup[i].handle = CreateThread(nullptr, 0xffff, reinterpret_cast<LPTHREAD_START_ROUTINE>(thread_main_tiles),
-                                           nullptr, 0, nullptr);
+        workgroup[i].handle = CreateThread(nullptr, 0xffff, thread_main_tiles, &batched_thrd_controls[i], 0, nullptr);
     }
 }
 
@@ -268,10 +257,13 @@ void platform::threads::osAssignAndWakeBatchProcessors(platform::threads::thread
 {
     for (u16 i = 0; i < workgroup_area; i++)
     {
+        EnterCriticalSection(static_cast<PCRITICAL_SECTION>(workgroup[i].thread_guard));
         workgroup[i].next_task = fn;
         workgroup[i].next_task_params = { workgroup_width, workgroup_height, i };
+        batched_thrd_controls[i]._work_pending = true;
+        WakeConditionVariable(static_cast<PCONDITION_VARIABLE>(workgroup[i].cvar));
+        LeaveCriticalSection(static_cast<PCRITICAL_SECTION>(workgroup[i].thread_guard));
     }
-    WakeAllConditionVariable(batch_cvar);
 }
 
 void platform::threads::osAssignAndWakeWorker(platform::threads::thread_meta::worker_thrd_fn fn,
@@ -286,15 +278,17 @@ void platform::threads::osTerminateBatchProcessors(
 {
     for (u16 i = 0; i < workgroup_area; i++)
     {
+        EnterCriticalSection(static_cast<PCRITICAL_SECTION>(workgroup[i].thread_guard));
         workgroup[i].thread_openness->fetch_sub(1);
+        WakeConditionVariable(static_cast<PCONDITION_VARIABLE>(workgroup[i].cvar));
+        LeaveCriticalSection(static_cast<PCRITICAL_SECTION>(workgroup[i].thread_guard));
     }
-
-    WakeAllConditionVariable(batch_cvar);
 
     for (u16 i = 0; i < workgroup_area; i++)
     {
         WaitForSingleObject(static_cast<HANDLE>(workgroup[i].handle), INFINITE);
         DeleteCriticalSection(static_cast<PCRITICAL_SECTION>(workgroup[i].thread_guard));
+        CloseHandle(static_cast<HANDLE>(workgroup[i].handle));
     }
 }
 

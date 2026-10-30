@@ -66,7 +66,8 @@ export namespace spectra
 
             // The surface is matte black; all frequencies reflected equally poorly
             // Since no frequencies are particularly bright, just return one at random
-            last_bucket = static_cast<u32>(std::floor(u * num_buckets));
+            const u32 bucket_ndx = static_cast<u32>(std::floor(u * num_buckets));
+            last_bucket = bucket_ndx < num_buckets ? bucket_ndx : num_buckets - 1;
             return (last_bucket * interval_size) + (v * interval_size);
         }
         void update(float weight)

@@ -146,7 +146,7 @@ export namespace camera
             curr_sensel.g = rgb.e[1];
             curr_sensel.b = rgb.e[2];
         }
-        else if (sample_num < aa::max_samples)
+        else
         {
             curr_sensel.r += rgb.e[0];
             curr_sensel.g += rgb.e[1];

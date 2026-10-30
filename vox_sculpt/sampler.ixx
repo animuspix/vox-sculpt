@@ -17,6 +17,11 @@ import vox_ints;
 
 export namespace sampler
 {
+    float unit_float(u32 value)
+    {
+        return static_cast<float>(value >> 8) * (1.0f / 16777216.0f);
+    }
+
     // Modified integer hash from iq, found in Nimitz's WebGL2 Quality Hashes Collection
     // (https://www.shadertoy.com/view/Xt3cDn)
     // Original from:
@@ -85,10 +90,10 @@ export namespace sampler
             }
 
             // Pass updated state back to the callsite
-            output[0] = ctr[0] / 4294967295.0f;
-            output[1] = ctr[1] / 4294967295.0f;
-            output[2] = ctr[2] / 4294967295.0f;
-            output[3] = ctr[3] / 4294967295.0f;
+            output[0] = unit_float(ctr[0]);
+            output[1] = unit_float(ctr[1]);
+            output[2] = unit_float(ctr[2]);
+            output[3] = unit_float(ctr[3]);
         }
 
         // Initialization assumes one seed/tile
