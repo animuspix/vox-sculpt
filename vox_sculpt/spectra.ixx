@@ -1,6 +1,7 @@
 export module spectra;
 import vox_ints;
 import vmath;
+import <cmath>;
 
 export namespace spectra
 {
@@ -11,7 +12,7 @@ export namespace spectra
     {
         const float blue = vmath::clamp(vmath::gaussian(rho, 0.25f, 0.18f, 0.1f, -0.75f), 0.0f, 1.0f);
         const float orange = vmath::clamp(vmath::gaussian(rho, 0.25f, 0.7f, 0.1f, -0.75f), 0.0f, 1.0f);
-        return vmath::lerp(blue, orange, vmath::fabs(y));
+        return vmath::lerp(blue, orange, std::abs(y));
     }
 
     // Custom film/sensor response curve, kinda follows the references in Zucconi's diffraction tutorial but heavily iterated to give a more film-like
@@ -65,7 +66,7 @@ export namespace spectra
 
             // The surface is matte black; all frequencies reflected equally poorly
             // Since no frequencies are particularly bright, just return one at random
-            last_bucket = static_cast<u32>(vmath::ffloor(u * num_buckets));
+            last_bucket = static_cast<u32>(std::floor(u * num_buckets));
             return (last_bucket * interval_size) + (v * interval_size);
         }
         void update(float weight)

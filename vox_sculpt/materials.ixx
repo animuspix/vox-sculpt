@@ -4,6 +4,7 @@ export module materials;
 
 import vmath;
 import spectra;
+import <cmath>;
 
 // Supported materials, mostly planned (only lambertian diffuse implemented atm)
 // Material properties will eventually be data-driven from imgui (via d3d11), not hardcoded
@@ -63,16 +64,16 @@ export namespace materials
             // Infer radial distance from the larger absolute value between
             // [uv.elts[0]] and [uv.elts[1]], then re-apply the sign of the original
             // axis
-            bool uGreater = vmath::fabs(rnd_u) > vmath::fabs(rnd_v);
+            bool uGreater = std::abs(rnd_u) > std::abs(rnd_v);
             float r = uGreater ? rnd_u : rnd_v;
             float theta = uGreater ? vmath::quarter_pi * (rnd_u / rnd_v) :
                                      vmath::half_pi * (rnd_v / rnd_u);
-            rnd_u = r * static_cast<float>(cos(theta));
-            rnd_v = r * static_cast<float>(sin(theta));
+            rnd_u = r * static_cast<float>(std::cos(theta));
+            rnd_v = r * static_cast<float>(std::sin(theta));
         }
         rnd_u *= rnd_u;
         rnd_v *= rnd_v;
-        *out_dir = vmath::vec<3>(rnd_u, static_cast<float>(sqrt(1.0f - (rnd_u + rnd_v))), rnd_v).normalized();
+        *out_dir = vmath::vec<3>(rnd_u, static_cast<float>(std::sqrt(1.0f - (rnd_u + rnd_v))), rnd_v).normalized();
         *out_pdf = out_dir->dot(vmath::vec<3>(0, 1, 0)) / vmath::pi; // generated ray is in sampling space and sees the normal parallel to y-up
                                                                      // nDotL *and* div by pi feels super sketchy
                                                                      // ~Fairly sure this evaluates down to just the y-axis of the sampled ray, divided by pi;

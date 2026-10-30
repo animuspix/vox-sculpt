@@ -8,7 +8,8 @@ import scene;
 import spectra;
 import vox_ints;
 import aa;
-import platform;
+import <cmath>;
+import <cstring>;
 
 // Digital color/sensor data model, used to map from spectral inputs to writable screen colors
 // (slowly turning into a retinal cone cell model instead oops, might update names eventually)
@@ -53,7 +54,7 @@ export namespace camera
     // Camera sampling! just perspective projection for now :)
     constexpr float FOV_RADS = vmath::pi * 0.5f;
     const vmath::vec<3> camera_pos() { return vmath::vec<3>(0, 0, -10.0f); }
-    const float camera_z_axis() { return (ui::window_width * aa::samples_x) / vmath::ftan(FOV_RADS * 0.5f); }
+    const float camera_z_axis() { return (ui::window_width * aa::samples_x) / std::tan(FOV_RADS * 0.5f); }
     export tracing::path_vt lens_sample(u32 film_x, u32 film_y, float rand_u, float rand_v, float rho)
     {
         // Compute supersampled coordinates
@@ -308,9 +309,9 @@ export namespace camera
         for (u32 y = ymin; y < ymax; y++)
         {
             const u32 ndx = y * ui::window_width + xmin;
-            platform::osClearMem(digital_colors + ndx, sizeof(u32) * w);
-            platform::osClearMem(sensor_grid + ndx, sizeof(sensel) * w);
-            platform::osClearMem(filter_sum_grid + ndx, sizeof(float) * w);
+            std::memset(digital_colors + ndx, 0, sizeof(u32) * w);
+            std::memset(sensor_grid + ndx, 0, sizeof(sensel) * w);
+            std::memset(filter_sum_grid + ndx, 0, sizeof(float) * w);
         }
     }
 
@@ -321,6 +322,6 @@ export namespace camera
         sensor_grid = mem::allocate_tracing<sensel>(sensor_grid_footprint);
         digital_colors = mem::allocate_tracing<u32>(digital_colors_footprint);
         filter_sum_grid = mem::allocate_tracing<float>(filter_sum_grid_footprint);
-        platform::osClearMem(filter_sum_grid, filter_sum_grid_footprint);
+        std::memset(filter_sum_grid, 0, filter_sum_grid_footprint);
     }
 }

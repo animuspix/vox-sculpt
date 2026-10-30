@@ -2,6 +2,9 @@
 import ui;
 import camera;
 import <chrono>;
+import <cstdio>;
+import <cstring>;
+import <atomic>;
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include "resource.h"
@@ -11,7 +14,6 @@ import mem;
 import tracing;
 import parallel;
 import geometry;
-import platform;
 import vox_ints;
 import updater;
 
@@ -59,9 +61,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 //#define TIMED_TRACING
 #ifdef TIMED_TRACING
     bool tracing_prepass_completed = false;
-    double rt_t = platform::osGetCurrentTimeSeconds();
+    double rt_t = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 #endif
-    double t = platform::osGetCurrentTimeMilliSeconds();
+    double t = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
     double dt = 0;
     u32 frontend_ticks = 0;
     u32 present_interval = 20;
@@ -87,7 +89,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                     for (u16 j = bound_y_min; j < bound_y_max; j++)
                     {
                         u32 offs = (j * ui::window_width) + bound_x_min;
-                        memcpy(backBuf + offs, camera::digital_colors + offs, tile_width * sizeof(u32));
+                        std::memcpy(backBuf + offs, camera::digital_colors + offs, tile_width * sizeof(u32));
                     }
                     parallel::tiles[i].messaging->store(0);
                 }
@@ -106,16 +108,19 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 #ifdef TIMED_TRACING
         if (tracing::completed_tiles->load() == parallel::numTiles)
         {
-            platform::osDebugLogFmt("volume tracing completed within %f seconds \n", platform::osGetCurrentTimeSeconds() - rt_t);
-            platform::osDebugBreak();
+            char log_message[128];
+            std::snprintf(log_message, sizeof(log_message), "volume tracing completed within %f seconds \n", std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count() - rt_t);
+            OutputDebugStringA(log_message);
+            DebugBreak();
         }
         if ((tracing::tile_prepass_completion->load() == parallel::numTiles) && !tracing_prepass_completed)
         {
-            double t_trace_timer = platform::osGetCurrentTimeSeconds();
-            platform::osDebugLogFmt("prepass/sky tracing completed within %f seconds \n", t_trace_timer - rt_t);
+            double t_trace_timer = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            char log_message[128];
+            std::snprintf(log_message, sizeof(log_message), "prepass/sky tracing completed within %f seconds \n", t_trace_timer - rt_t);
+            OutputDebugStringA(log_message);
             rt_t = t_trace_timer; // Update timestamp before profiling volume tracing
             tracing_prepass_completed = true;
-            //platform::osDebugBreak();
         }
 #endif
 
@@ -124,14 +129,14 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
-            InvalidateRect(reinterpret_cast<HWND>(platform::osGetWindowHandle()), NULL, false);
+            InvalidateRect(ui::window_handle, NULL, false);
         }
 
         // Increment tick/time counters (used for render copy scheduling)
         frontend_ticks++;
 
         // + Update delta-time (also used for render copy scheduling)
-        const double curr_t = platform::osGetCurrentTimeMilliSeconds();
+        const double curr_t = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
         dt = curr_t - t;
         t = curr_t;
     }
@@ -176,76 +181,17 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             // Ready to present, so send output bits off to the window surface
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hWnd, &ps);
-            BITMAPINFO* bmi = (BITMAPINFO*)platform::osGetWindowBmi();
-            u32 test = SetDIBitsToDevice(hdc, 0, 0, ui::window_width, ui::window_height, 0, 0, 0, ui::window_height, backBuf, const_cast<BITMAPINFO*>(bmi), DIB_RGB_COLORS);
+            SetDIBitsToDevice(hdc, 0, 0, ui::window_width, ui::window_height, 0, 0, 0, ui::window_height, backBuf, &ui::bitmap_info, DIB_RGB_COLORS);
             EndPaint(hWnd, &ps);
         }
         break;
 
         // See https://docs.microsoft.com/en-us/windows/win32/learnwin32/keyboard-input for windows platform input implementation
         // + https://docs.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes for windows key-codes
-        case WM_KEYUP:
-            if (!(GetKeyState(VK_ESCAPE) & 0x8000))
-            {
-                platform::osKeyUp(platform::VOX_SCULPT_KEYS::KEY_ESCAPE);
-            }
-            if (!(GetKeyState(0x5a) & 0x8000)) // 0x5a = Letter Z
-            {
-                platform::osKeyUp(platform::VOX_SCULPT_KEYS::KEY_Z);
-            }
-            if (!(GetKeyState(VK_LCONTROL) & 0x8000))
-            {
-                platform::osKeyUp(platform::VOX_SCULPT_KEYS::KEY_LCTRL);
-            }
-            if (!(GetKeyState(VK_LEFT) & 0x8000))
-            {
-                platform::osKeyUp(platform::VOX_SCULPT_KEYS::KEY_LEFT_ARROW);
-            }
-            if (!(GetKeyState(VK_RIGHT) & 0x8000))
-            {
-                platform::osKeyUp(platform::VOX_SCULPT_KEYS::KEY_RIGHT_ARROW);
-            }
-            if (!(GetKeyState(VK_UP) & 0x8000))
-            {
-                platform::osKeyUp(platform::VOX_SCULPT_KEYS::KEY_UP_ARROW);
-            }
-            if (!(GetKeyState(VK_DOWN) & 0x8000))
-            {
-                platform::osKeyUp(platform::VOX_SCULPT_KEYS::KEY_DOWN_ARROW);
-            }
-            break;
-
         case WM_KEYDOWN:
-            if (GetKeyState(VK_ESCAPE) & 0x8000)
+            if (wParam == VK_ESCAPE)
             {
-                platform::osKeyDown(platform::VOX_SCULPT_KEYS::KEY_ESCAPE);
-
-                // Instant quit for now, eventually this will hook into UI and prompt a warning pop-up/save dialog
                 PostQuitMessage(0);
-            }
-            if (GetKeyState(0x5a) & 0x8000) // 0x5a = Letter Z
-            {
-                platform::osKeyDown(platform::VOX_SCULPT_KEYS::KEY_Z);
-            }
-            if (GetKeyState(VK_LCONTROL) & 0x8000)
-            {
-                platform::osKeyDown(platform::VOX_SCULPT_KEYS::KEY_LCTRL);
-            }
-            if (GetKeyState(VK_LEFT) & 0x8000)
-            {
-                platform::osKeyDown(platform::VOX_SCULPT_KEYS::KEY_LEFT_ARROW);
-            }
-            if (GetKeyState(VK_RIGHT) & 0x8000)
-            {
-                platform::osKeyDown(platform::VOX_SCULPT_KEYS::KEY_RIGHT_ARROW);
-            }
-            if (GetKeyState(VK_UP) & 0x8000)
-            {
-                platform::osKeyDown(platform::VOX_SCULPT_KEYS::KEY_UP_ARROW);
-            }
-            if (GetKeyState(VK_DOWN) & 0x8000)
-            {
-                platform::osKeyDown(platform::VOX_SCULPT_KEYS::KEY_DOWN_ARROW);
             }
             break;
 

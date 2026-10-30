@@ -1,6 +1,11 @@
+module;
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+#undef min
+#undef max
+
 export module updater;
 
-import platform;
 import geometry;
 import camera;
 import tracing;
@@ -23,14 +28,14 @@ export namespace render_updates
 		const float zSpd = 0.01f;
 
 		// Volume updates
-		xrot = platform::osTestKey(platform::VOX_SCULPT_KEYS::KEY_UP_ARROW) ? spinSpd :
-			platform::osTestKey(platform::VOX_SCULPT_KEYS::KEY_DOWN_ARROW) ? -spinSpd : 0.0f;
+		xrot = (GetKeyState(VK_UP) & 0x8000) ? spinSpd :
+			(GetKeyState(VK_DOWN) & 0x8000) ? -spinSpd : 0.0f;
 
-		yrot = platform::osTestKey(platform::VOX_SCULPT_KEYS::KEY_LEFT_ARROW) ? spinSpd :
-			platform::osTestKey(platform::VOX_SCULPT_KEYS::KEY_RIGHT_ARROW) ? -spinSpd : 0.0f;
+		yrot = (GetKeyState(VK_LEFT) & 0x8000) ? spinSpd :
+			(GetKeyState(VK_RIGHT) & 0x8000) ? -spinSpd : 0.0f;
 
-		z = platform::osTestKey(platform::VOX_SCULPT_KEYS::KEY_Z) ? zSpd :
-			platform::osTestKey(platform::VOX_SCULPT_KEYS::KEY_LCTRL) ? -zSpd : 0.0f;
+		z = (GetKeyState('Z') & 0x8000) ? zSpd :
+			(GetKeyState(VK_LCONTROL) & 0x8000) ? -zSpd : 0.0f;
 
 		// Convert zoom/orbit to object transforms (scale & rotation), then send them over to our volume
 		const bool spinning = xrot != 0.0f || yrot != 0.0f;

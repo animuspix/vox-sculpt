@@ -1,3 +1,9 @@
+module;
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+#undef min
+#undef max
+
 export module tracing;
 
 import camera;
@@ -14,6 +20,12 @@ import spectra;
 import sampler;
 import lights;
 import aa;
+import <chrono>;
+import <cmath>;
+import <cstring>;
+import <cstdio>;
+import <atomic>;
+import <memory>;
 
 //#define TRACING_DBG
 #ifdef TRACING_DBG
@@ -30,10 +42,10 @@ namespace tracing
     export vmath::vec<2>* tracing_tile_positions = nullptr;
     export vmath::vec<2>* tracing_tile_bounds = nullptr;
     export vmath::vec<2>* tracing_tile_sizes = nullptr;
-    export platform::threads::osAtomicInt* completed_tiles = nullptr;
-    export platform::threads::osAtomicInt* tile_prepass_completion = nullptr;
-    export platform::threads::osAtomicInt* views_resampling = nullptr; // Semaphores indicating whether each view needs to be refreshed to account for new information (e.g. different volume/camera transforms after input)
-    platform::threads::osAtomicInt* draws_running = nullptr;
+    export std::atomic<long>* completed_tiles = nullptr;
+    export std::atomic<long>* tile_prepass_completion = nullptr;
+    export std::atomic<long>* views_resampling = nullptr; // Semaphores indicating whether each view needs to be refreshed to account for new information (e.g. different volume/camera transforms after input)
+    std::atomic<long>* draws_running = nullptr;
 
 
     // Stratified spectra per-pixel, allowing us to bias color samples towards the scene SPD instead of drawing randomly for every tap
@@ -66,14 +78,14 @@ namespace tracing
     {
         sample_ctr[tileNdx] = 0;
         camera::clear_patch(minX, xMax, minY, yMax);
-        platform::osClearMem(cameraPaths + tileNdx, sizeof(path));
+        std::memset(cameraPaths + tileNdx, 0, sizeof(path));
         const u32 w = xMax - minX;
         for (i32 y = minY; y < yMax; y++)
         {
             const u32 yOffs = y * ui::window_width;
             const u32 offs = minX + yOffs;
             *(isosurf_distances + offs) = -1.0f;
-            platform::osClearMem(spectral_strata + offs, sizeof(spectra::spectral_buckets) * w);
+            std::memset(spectral_strata + offs, 0, sizeof(spectra::spectral_buckets) * w);
         }
     }
 
@@ -150,7 +162,6 @@ namespace tracing
                     //lightPaths[tileNdx].clear();
 
                     // Test for unresolved/buggy paths
-                    //if (cameraPaths[tileNdx].front > 0) platform::osDebugBreak();
                 }
                 else // Otherwise hop directly to the sky
                      // Similar code to the escaped-path light sampling in [scene.ixx]
@@ -284,8 +295,8 @@ namespace tracing
                                 volume_tracing = true;
 
                                 // Compute quad width, height
-                                float qWidth = (vmath::fabs(geometry::vol::metadata->transf.ss_v3.x() - geometry::vol::metadata->transf.ss_v0.x()));
-                                float qHeight = (vmath::fabs(geometry::vol::metadata->transf.ss_v3.y() - geometry::vol::metadata->transf.ss_v0.y()));
+                                float qWidth = std::abs(geometry::vol::metadata->transf.ss_v3.x() - geometry::vol::metadata->transf.ss_v0.x());
+                                float qHeight = std::abs(geometry::vol::metadata->transf.ss_v3.y() - geometry::vol::metadata->transf.ss_v0.y());
 
                                 // Clip quad-width/height to screen area
                                 u16 quadWidth = vmath::min(u16(qWidth), ui::window_width);
@@ -322,22 +333,26 @@ namespace tracing
                         if (!bg_prepass)
                         {
                             // Log to console once we finish sampling the volume
-                            platform::osDebugLogFmt("%iSPP rendering completed for tile %i\n", aa::max_samples, tileNdx);
+                            char log_message[128];
+                            std::snprintf(log_message, sizeof(log_message), "%iSPP rendering completed for tile %i\n", aa::max_samples, tileNdx);
+                            OutputDebugStringA(log_message);
                             tile_sampling_finished = true;
 
                             // Signal the current tile has finished sampling
-                            completed_tiles->inc();
+                            completed_tiles->fetch_add(1);
                         }
                         else
                         {
                             // Also log after we finish sampling visible sky in the viewport
-                            platform::osDebugLogFmt("%iSPP sky prepass completed for tile %i\n", aa::max_samples, tileNdx);
+                            char log_message[128];
+                            std::snprintf(log_message, sizeof(log_message), "%iSPP sky prepass completed for tile %i\n", aa::max_samples, tileNdx);
+                            OutputDebugStringA(log_message);
 
                             // Reset sample counts before we start volume rendering
                             sample_ctr[tileNdx] = 0;
 
                             // Signal the sky prepass has finished for the current tile
-                            tile_prepass_completion->inc();
+                            tile_prepass_completion->fetch_add(1);
                             bg_prepass = false;
                         }
                     }
@@ -349,7 +364,7 @@ namespace tracing
                     // Signal a completed sampling iteration
                     parallel::tiles[tileNdx].messaging->store(1);
                     samples_processed = true;
-                    tick_timepoint = platform::osGetCurrentTimeMilliSeconds();
+                    tick_timepoint = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
                 }
                 else if (renderMode == RENDER_MODE_EDIT)
                 {
@@ -359,7 +374,7 @@ namespace tracing
                     // Signal a completed sampling iteration
                     parallel::tiles[tileNdx].messaging->store(1);
                     samples_processed = true;
-                    tick_timepoint = platform::osGetCurrentTimeMilliSeconds();
+                    tick_timepoint = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
                 }
                 tracing_thread_ticks++;
             }
@@ -387,29 +402,26 @@ namespace tracing
         }
 
         // Resolve tracing types
-        platform::osClearMem(cameraPaths, sizeof(path) * parallel::numTiles);
+        std::memset(cameraPaths, 0, sizeof(path) * parallel::numTiles);
         for (u32 i = 0; i < ui::window_area; i++)
         {
             isosurf_distances[i] = -1.0f; // Reserve zero distance for voxels directly facing a grid boundary
         }
 
         // Allocate & initialize draw_state
-        draws_running = mem::allocate_tracing<platform::threads::osAtomicInt>(sizeof(platform::threads::osAtomicInt));
-        draws_running->init();
-        draws_running->inc();
+        draws_running = std::construct_at(mem::allocate_tracing<std::atomic<long>>(sizeof(std::atomic<long>)));
+        draws_running->store(1);
 
         // Allocate & initialize view-resampling state
-        views_resampling = mem::allocate_tracing<platform::threads::osAtomicInt>(sizeof(platform::threads::osAtomicInt) * parallel::numTiles);
+        views_resampling = mem::allocate_tracing<std::atomic<long>>(sizeof(std::atomic<long>) * parallel::numTiles);
         for (u32 i = 0; i < parallel::numTiles; i++)
         {
-            views_resampling[i].init();
+            std::construct_at(views_resampling + i);
         }
 
         // Allocate & initialize work completion state
-        completed_tiles = mem::allocate_tracing<platform::threads::osAtomicInt>(sizeof(platform::threads::osAtomicInt));
-        completed_tiles->init();
-        tile_prepass_completion = mem::allocate_tracing<platform::threads::osAtomicInt>(sizeof(platform::threads::osAtomicInt));
-        tile_prepass_completion->init();
+        completed_tiles = std::construct_at(mem::allocate_tracing<std::atomic<long>>(sizeof(std::atomic<long>)));
+        tile_prepass_completion = std::construct_at(mem::allocate_tracing<std::atomic<long>>(sizeof(std::atomic<long>)));
     }
 };
 

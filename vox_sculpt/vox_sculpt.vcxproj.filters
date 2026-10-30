@@ -50,9 +50,6 @@
     <ClCompile Include="path.ixx">
       <Filter>Modules</Filter>
     </ClCompile>
-    <ClCompile Include="platform.cpp">
-      <Filter>Modules</Filter>
-    </ClCompile>
     <ClCompile Include="platform.ixx">
       <Filter>Modules</Filter>
     </ClCompile>
@@ -75,12 +72,6 @@
       <Filter>Modules</Filter>
     </ClCompile>
     <ClCompile Include="aa.ixx">
-      <Filter>Modules</Filter>
-    </ClCompile>
-    <ClCompile Include="vmath.cpp">
-      <Filter>Modules</Filter>
-    </ClCompile>
-    <ClCompile Include="geometry.cpp">
       <Filter>Modules</Filter>
     </ClCompile>
     <ClCompile Include="updater.ixx">

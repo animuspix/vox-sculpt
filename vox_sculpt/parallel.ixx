@@ -7,6 +7,11 @@ import mem;
 import vmath;
 import vox_ints;
 import <stdio.h>;
+import <cmath>;
+import <cstring>;
+import <atomic>;
+import <memory>;
+import <thread>;
 
 //#define PARALLEL_DBG
 #ifdef PARALLEL_DBG
@@ -25,12 +30,12 @@ export namespace parallel
     void init()
     {
         // Find maximum tile count for the current platform
-        numTiles = platform::threads::osResolveAvailableBatchProcessors();
-        const float root = vmath::fsqrt(numTiles);
+        numTiles = std::thread::hardware_concurrency() - 2;
+        const float root = std::sqrt(static_cast<float>(numTiles));
         if (root - int(root) > 0)
         {
             // X is the root of the previous perfect square
-            numTilesX = static_cast<u16>(vmath::ffloor(root));
+            numTilesX = static_cast<u16>(std::floor(root));
 
             // We want our threads to tile as evenly as possible;
             // approximate tiles_y by dividing out the total number
@@ -56,7 +61,10 @@ export namespace parallel
 
         // Allocat thread tiles
         tiles = mem::allocate_tracing<platform::threads::osThread<platform::threads::thread_meta::TILE>>(sizeof(platform::threads::osThread<platform::threads::thread_meta::TILE>) * numTiles);
-        platform::osClearMem(tiles, sizeof(platform::threads::osThread<platform::threads::thread_meta::TILE>) * numTiles);
+        for (u16 i = 0; i < numTiles; i++)
+        {
+            std::construct_at(tiles + i);
+        }
 
         // Allocate PRNG streams
         rand_streams = mem::allocate_tracing<sampler::philox>(sizeof(sampler::philox) * numTiles);
@@ -67,7 +75,7 @@ export namespace parallel
         for (u16 i = 0; i < numTiles; i++)
         {
             logs[i] = mem::allocate_tracing<char>(4 * 1024 * 1024);
-            platform::osClearMem(logs[i], 4 * 1024 * 1024);
+            std::memset(logs[i], 0, 4 * 1024 * 1024);
         }
 
         // Allocate log-length tags

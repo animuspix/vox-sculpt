@@ -1,7 +1,8 @@
 export module mem;
 
 import vox_ints;
-import platform;
+import <cstddef>;
+import <new>;
 
 namespace mem
 {
@@ -20,7 +21,7 @@ namespace mem
         static_assert(sizeof(void*) == 8, "vox_sculpt needs at least 4GB of memory - 32bit builds will fail to allocate and crash early in startup");
         max_footprint = 0x100000000; // Arbitrary init size, since c++ doesn't seem to have great upfront allocation support and i kinda super ceebs continuing to
                                     // manage system footprints myself
-        pool = platform::osMalloc(max_footprint, sizeof(u32));//HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, max_footprint); // Full up-front allocation
+        pool = ::operator new(static_cast<size_t>(max_footprint));
         tracing_arena = (u8*)pool;
         alloc_offs = 0;
     }
@@ -38,6 +39,6 @@ namespace mem
     }
     export void deinit()
     {
-        platform::osFree(pool);
+        ::operator delete(pool);
     }
 };

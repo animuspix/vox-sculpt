@@ -1,9 +1,16 @@
+module;
+#include <Windows.h>
+#undef min
+#undef max
+
 export module platform;
 
 import vox_ints;
+import mem;
+import <atomic>;
+import <memory>;
 import <type_traits>;
 import <tuple>;
-import <stdio.h>;
 
 // Thread workload prototypes
 // Different types of system thread can have different types of work
@@ -13,45 +20,11 @@ void(*worker_fn_prototype)(); // Workers
 void(*tile_fn_prototype)(u16, u16, u16); // Work-group width, work-group height, work-group index
 
 
-// Internal text formatting interface; separated out to keep implementation details away from our export block below
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-// Bucket used for (singlethreaded) formatted text output, duration with maximum 1024 characters supported
-// (most lines should be much shorter)
-constexpr u16 txt_buf_len = 1024;
-char txt_buf[txt_buf_len];
-
-// Core formatting interface for debug text
-template<typename...logging_types>
-char* txt_formatter(const char* txt, i32* chars_written, logging_types...formatted_data)
-{
-    *chars_written = sprintf_s(txt_buf, txt_buf_len, txt, formatted_data...);
-    return txt_buf;
-}
-
 export namespace platform
 {
     // Foward-declare _everything_ to keep implementations away from modules
     namespace threads
     {
-        // Memory for these _must_ come from the heap, implicitly or explicitly
-        struct osAtomicInt
-        {
-            // Praying that SO is right and I don't need locks for volatile 32-bit values
-            //u64 lock_data; // Lock object controlling load & store accesses which can't be gated by [Interlocked[x]] operations
-            //               // (memory formatted by calling [InitializeSRWLock()] on Windows)
-            private:
-                long core_data = 0; // Core atomic data, to guarantee that our actual atomic integers are immediately behind [messenger] in memory;
-                                          // code should never directly modify this member (modifications through [messenger] are totes fine & good)
-                volatile long* messenger; // Kinda gross, makes win32 happy though
-            public:
-                void init();
-                void inc();
-                void dec();
-                long load();
-                void store(long value);
-        };
-
         // Architectural details for the threading system used by vox_sculpt
         // Considering moving these to their own module
         // (especially if I eventually decide to support graphics accelerators)
@@ -87,21 +60,22 @@ export namespace platform
         class osThreadGeneric
         {
             public:
-            osThreadGeneric(): initialized(false),
+            osThreadGeneric(): handle(nullptr),
+                               messaging(nullptr),
+                               state(nullptr),
+                               cvar(nullptr),
                                thread_guard(nullptr),
-                               thread_openness(nullptr) {}; // Generic thread types cannot be freely created or destroyed, only upcasted from regular thread types (to allow for flexible code without
+                               thread_openness(nullptr),
+                               initialized(false) {}; // Generic thread types cannot be freely created or destroyed, only upcasted from regular thread types (to allow for flexible code without
                                                             // explicit templates everywhere)
             ~osThreadGeneric(){};
             void* handle; // Associated with a Win32 HANDLE in per-platform code
-            osAtomicInt* messaging; // Four bytes of atomic status, used for communicating with main/other threads
-            osAtomicInt* state; // Four bytes of thread system state, either 0x000000000 (running a task/working), 0xffffffff (between tasks/sleeping), or an error code (every other value, none defined yet)
+            std::atomic<long>* messaging; // Atomic status, used for communicating with main/other threads
+            std::atomic<long>* state; // Thread system state: running, sleeping, or an error code
                                 // Should be read by main and written by [this], except on thread launch
 
             // Checks if the specified thread has finished, and returns immediately if it hasn't
             //void osWaitNonblocking(osThreadGeneric* thread);
-
-            // Directly calls [WaitForSingleObject] on the target thread
-            void osWaitForExecution();
 
             // Test if a thread has been initialized already
             bool osCheckInitialized() { return initialized; }
@@ -114,7 +88,7 @@ export namespace platform
 
             // Zero for closed, one for open
             // This enables efficiently terminating individual threads, while allowing regular stack unwinding & memory reclamation
-            osAtomicInt* thread_openness;
+            std::atomic<long>* thread_openness;
 
             protected:
             bool initialized;
@@ -129,18 +103,16 @@ export namespace platform
                 //typedef std::conditional<type == WORKER, decltype(worker_fn_prototype), decltype(tile_fn_prototype)>::type work_type; // std::conditional seems to be buggy with modules, using tuples for now
                 std::tuple<thread_meta::worker_thrd_fn, thread_meta::tile_thrd_fn> work_types;
                 typedef std::remove_reference<decltype(std::get<type == thread_meta::WORKER ? 0 : 1>(work_types))>::type work_type;
-                work_type next_task; // Pointer to next workload to execute (no jobs for now, so just one task/thread)
+                work_type next_task = nullptr; // Pointer to next workload to execute (no jobs for now, so just one task/thread)
 
                 std::tuple<thread_meta::worker_params, thread_meta::tile_params> work_paramsets;
                 typedef std::remove_reference<decltype(std::get<type == thread_meta::WORKER ? 0 : 1>(work_paramsets))>::type work_params;
-                work_params next_task_params; // Cached parameters for each task invocation
+                work_params next_task_params = {}; // Cached parameters for each task invocation
         };
 
         // Find tile count for the current cpu (at runtime)
         // We assume that we flood the cpu with tile work, and any independant worker threads are timesliced in (since they'll most likely be i/o tasks that we
         // don't super mind running behind slightly)
-        u32 osResolveAvailableBatchProcessors();
-
         // Update arguments for batched threads, then wake them
         void osAssignAndWakeBatchProcessors(thread_meta::tile_thrd_fn fn,
                                             osThread<thread_meta::TILE>* workgroup, u8 workgroup_width, u8 workgroup_height, u16 workgroup_area);
@@ -160,51 +132,178 @@ export namespace platform
         // Wake & terminate a worker thread
         void osTerminateWorker(osThread<thread_meta::WORKER>* worker);
 
-        // Waits for the specified atomic to reach a certain value
-        void osWaitForSignal(osAtomicInt* messenger, u32 expected_value);
-
-        // Get the ID associated with the calling thread on the current platform
-        u32 osGetThreadId();
     };
-    enum class VOX_SCULPT_KEYS
-    {
-        KEY_ESCAPE,
-        KEY_LEFT_ARROW,
-        KEY_RIGHT_ARROW,
-        KEY_UP_ARROW,
-        KEY_DOWN_ARROW,
-        KEY_Z,
-        KEY_LCTRL,
-        NUM_SUPPORTED_KEYS
-    };
-    void osKeyDown(VOX_SCULPT_KEYS keyID);
-    void osKeyUp(VOX_SCULPT_KEYS keyID);
-    bool osTestKey(VOX_SCULPT_KEYS key);
-    bool osWindowSetup(void* hInstance, int nCmdShow, void* wndProcSig, wchar_t* wndClassName, wchar_t* wndTitle, u16 w, u16 h);
-    void* osGetWindowBmi();
-    u64 osGetWindowHandle();
-    void osAssertion(bool test);
-    void osDebugLog(const char* str_const);
-    void osDebugLog(char* str, u32 len_printable);
-    void osDebugLog(const char* str_const, u32 len_printable)
-    {
-        //strcpy_s(fmt_txt, fmt_txt_len, str_const);
-        //osDebugLog(fmt_dbg_txt_buf, len_printable);
-    }
-    template<typename...logging_types>
-    void osDebugLogFmt(const char* str, logging_types...formatted_data)
-    {
-        i32 written_len = 0;
-        char* txt = txt_formatter<logging_types...>(str, &written_len, formatted_data...);
-        osDebugLog(txt, static_cast<u32>(written_len));
-    }
-    void osDebugBreak();
-    u64 osGetCurrentTimeNanoSeconds();
-    double osGetCurrentTimeMilliSeconds();
-    double osGetCurrentTimeSeconds();
-    void* osMalloc(u64 size, u64 alignment);
-    void osFree(void*);
-    void osClearMem(void* address, u32 length);
-    void osSetMem(void* address, u8 byte_pattern, u32 length);
-    void osCpyMem(void* dst, void* src, u64 size);
 };
+
+// Thread workload prototypes
+template<typename callable_t>
+concept thread_task_type = std::is_same_v<callable_t, platform::threads::thread_meta::worker_thrd_fn> ||
+                           std::is_same_v<callable_t, platform::threads::thread_meta::tile_thrd_fn>;
+
+template<thread_task_type task_type>
+struct osThreadControls
+{
+    PCONDITION_VARIABLE _cvar;
+    PCRITICAL_SECTION _crit_section;
+    task_type* _next_task;
+    void* _work_params;
+    std::atomic<long>* _state;
+    platform::threads::thread_meta::THREAD_TYPES _type;
+    std::atomic<long>* _thread_openness;
+};
+
+#define DEBUG_THRD_INDICES
+#ifdef DEBUG_THRD_INDICES
+static u32 indices[9] = {};
+#endif
+volatile u32* batched_thrd_indices;
+osThreadControls<platform::threads::thread_meta::tile_thrd_fn>* batched_thrd_controls = nullptr;
+
+#define DBG_THREAD_MAIN
+#ifdef DBG_THREAD_MAIN
+#pragma optimize ("", off)
+#endif
+DWORD thread_main_tiles()
+{
+    u32 thrd_ndx = *batched_thrd_indices;
+    InterlockedIncrement(batched_thrd_indices);
+#ifdef DEBUG_THRD_INDICES
+    indices[thrd_ndx] = thrd_ndx;
+#endif
+
+    osThreadControls<platform::threads::thread_meta::tile_thrd_fn> tile_controls = batched_thrd_controls[thrd_ndx];
+    PCRITICAL_SECTION crit = tile_controls._crit_section;
+    PCONDITION_VARIABLE cvar = tile_controls._cvar;
+    platform::threads::thread_meta::tile_thrd_fn* task = tile_controls._next_task;
+    void* task_params = tile_controls._work_params;
+    std::atomic<long>* state = tile_controls._state;
+    std::atomic<long>* thread_openness = tile_controls._thread_openness;
+
+    while (thread_openness->load())
+    {
+        EnterCriticalSection(crit);
+        if (SleepConditionVariableCS(cvar, crit, INFINITE))
+        {
+            platform::threads::thread_meta::tile_params* paramset =
+                static_cast<platform::threads::thread_meta::tile_params*>(task_params);
+            state->store(platform::threads::WORKING);
+            (*task)(paramset->workgroup_width, paramset->workgroup_height, paramset->workgroup_index);
+            state->store(platform::threads::SLEEPING);
+        }
+        LeaveCriticalSection(crit);
+    }
+    return 0;
+}
+#ifdef DBG_THREAD_MAIN
+#pragma optimize ("", on)
+#endif
+
+PCONDITION_VARIABLE batch_cvar = nullptr;
+void platform::threads::osInitBatchProcessors(platform::threads::osThread<platform::threads::thread_meta::TILE>* workgroup,
+                                              u16 workgroup_area)
+{
+    if (batch_cvar == nullptr)
+    {
+        batch_cvar = mem::allocate_tracing<CONDITION_VARIABLE>(sizeof(CONDITION_VARIABLE));
+        InitializeConditionVariable(batch_cvar);
+    }
+
+    if (batched_thrd_controls == nullptr)
+    {
+        batched_thrd_controls = mem::allocate_tracing<osThreadControls<platform::threads::thread_meta::tile_thrd_fn>>(
+            sizeof(osThreadControls<platform::threads::thread_meta::tile_thrd_fn>) * workgroup_area);
+        batched_thrd_indices = mem::allocate_tracing<u32>(sizeof(u32));
+        *batched_thrd_indices = 0;
+    }
+
+    for (u16 i = 0; i < workgroup_area; i++)
+    {
+        if (!workgroup[i].osCheckInitialized())
+        {
+            workgroup[i].cvar = batch_cvar;
+            workgroup[i].thread_guard = mem::allocate_tracing<CRITICAL_SECTION>(sizeof(CRITICAL_SECTION));
+            InitializeCriticalSection(static_cast<LPCRITICAL_SECTION>(workgroup[i].thread_guard));
+
+            workgroup[i].messaging = std::construct_at(mem::allocate_tracing<std::atomic<long>>(sizeof(std::atomic<long>)));
+            workgroup[i].messaging->store(0);
+
+            workgroup[i].state = std::construct_at(mem::allocate_tracing<std::atomic<long>>(sizeof(std::atomic<long>)));
+            workgroup[i].state->store(0);
+
+            workgroup[i].thread_openness = std::construct_at(mem::allocate_tracing<std::atomic<long>>(sizeof(std::atomic<long>)));
+            workgroup[i].thread_openness->store(1);
+
+            osThreadControls<platform::threads::thread_meta::tile_thrd_fn>& tile_controls = batched_thrd_controls[i];
+            tile_controls._cvar = batch_cvar;
+            tile_controls._crit_section = static_cast<PCRITICAL_SECTION>(workgroup[i].thread_guard);
+            tile_controls._next_task = &workgroup[i].next_task;
+            tile_controls._work_params = &workgroup[i].next_task_params;
+            tile_controls._state = workgroup[i].state;
+            tile_controls._type = platform::threads::thread_meta::TILE;
+            tile_controls._thread_openness = workgroup[i].thread_openness;
+        }
+        else
+        {
+            DebugBreak();
+        }
+    }
+
+    for (u16 i = 0; i < workgroup_area; i++)
+    {
+        workgroup[i].handle = CreateThread(nullptr, 0xffff, reinterpret_cast<LPTHREAD_START_ROUTINE>(thread_main_tiles),
+                                           nullptr, 0, nullptr);
+    }
+}
+
+void platform::threads::osInitWorker(platform::threads::osThread<platform::threads::thread_meta::WORKER>* worker)
+{
+    (void)worker;
+}
+
+void platform::threads::osAssignAndWakeBatchProcessors(platform::threads::thread_meta::tile_thrd_fn fn,
+                                                       platform::threads::osThread<platform::threads::thread_meta::TILE>* workgroup,
+                                                       u8 workgroup_width,
+                                                       u8 workgroup_height,
+                                                       u16 workgroup_area)
+{
+    for (u16 i = 0; i < workgroup_area; i++)
+    {
+        workgroup[i].next_task = fn;
+        workgroup[i].next_task_params = { workgroup_width, workgroup_height, i };
+    }
+    WakeAllConditionVariable(batch_cvar);
+}
+
+void platform::threads::osAssignAndWakeWorker(platform::threads::thread_meta::worker_thrd_fn fn,
+                                              platform::threads::osThread<platform::threads::thread_meta::WORKER>* worker)
+{
+    worker->next_task = fn;
+    WakeConditionVariable(static_cast<PCONDITION_VARIABLE>(worker->cvar));
+}
+
+void platform::threads::osTerminateBatchProcessors(
+    platform::threads::osThread<platform::threads::thread_meta::TILE>* workgroup, u16 workgroup_area)
+{
+    for (u16 i = 0; i < workgroup_area; i++)
+    {
+        workgroup[i].thread_openness->fetch_sub(1);
+    }
+
+    WakeAllConditionVariable(batch_cvar);
+
+    for (u16 i = 0; i < workgroup_area; i++)
+    {
+        WaitForSingleObject(static_cast<HANDLE>(workgroup[i].handle), INFINITE);
+        DeleteCriticalSection(static_cast<PCRITICAL_SECTION>(workgroup[i].thread_guard));
+    }
+}
+
+void platform::threads::osTerminateWorker(
+    platform::threads::osThread<platform::threads::thread_meta::WORKER>* worker)
+{
+    worker->thread_openness->fetch_sub(1);
+    WakeConditionVariable(static_cast<PCONDITION_VARIABLE>(worker->cvar));
+    WaitForSingleObject(static_cast<HANDLE>(worker->handle), INFINITE);
+    TerminateThread(static_cast<HANDLE>(worker->handle), 0);
+    DeleteCriticalSection(static_cast<PCRITICAL_SECTION>(worker->thread_guard));
+}

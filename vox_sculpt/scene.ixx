@@ -1,3 +1,9 @@
+module;
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+#undef min
+#undef max
+
 export module scene;
 
 import vmath;
@@ -5,7 +11,6 @@ import path;
 import vox_ints;
 import geometry;
 import parallel;
-import platform;
 import materials;
 import spectra;
 import lights;
@@ -97,7 +102,7 @@ export namespace scene
 #ifdef VALIDATE_STEPPED_RO
                 if (vmath::anyGreater(curr_ray.ori, geometry::vol::width - 1) || vmath::anyLesser(curr_ray.ori, -2.0f))
                 {
-                    platform::osDebugBreak();
+                    DebugBreak();
                 }
 #endif
 
@@ -120,7 +125,7 @@ export namespace scene
                             materials::diffuse_lambert_reflection(out_vt.rho_sample, volume_nfo.mat.spectral_response, curr_ray.ori, &out_vt.power, &out_vt.rho_weight);
                             break;
                         default:
-                            platform::osDebugBreak(); // Unsupported material ;_;
+                            DebugBreak(); // Unsupported material ;_;
                             break;
                     }
 
@@ -140,7 +145,6 @@ export namespace scene
                     else
                     {
                         // Map outgoing direction back from sampling-space to worldspace
-                        //platform::osDebugLogFmt("voxel intersected with normal %f, %f, %f\n", voxel_normal.x(), voxel_normal.y(), voxel_normal.z());
                         vmath::m3 nSpace = vmath::normalSpace(voxel_normal);
                         out_vt.dir = nSpace.apply(out_vt.dir).normalized();
                         out_vt.ori = curr_ray.ori;

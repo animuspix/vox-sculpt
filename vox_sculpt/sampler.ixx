@@ -13,7 +13,6 @@ export module sampler;
 // :)
 //////////////////////////////////////////////
 
-#include <intrin.h>
 import vox_ints;
 
 export namespace sampler
